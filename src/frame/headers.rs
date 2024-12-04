@@ -81,6 +81,52 @@ pub struct Iter {
 
     /// Header fields
     fields: header::IntoIter<HeaderValue>,
+
+    /// Pseudo headers order
+    pseudo_order: PseudoheadersOrder,
+}
+
+static PSEUDOHEADERS: [&str; 6] = [
+    ":method",
+    ":scheme",
+    ":authority",
+    ":path",
+    ":protocol",
+    ":status",
+];
+
+#[derive(Debug)]
+struct PseudoheadersOrder {
+    pub inner: Vec<String>,
+}
+
+impl PseudoheadersOrder {
+    pub fn load() -> Self {
+        let pseudo_env_var_order =
+            std::env::var("RETCH_H2_PSEUDOHEADERS_ORDER").unwrap_or(PSEUDOHEADERS.join(","));
+
+        PseudoheadersOrder::from(pseudo_env_var_order)
+    }
+}
+
+impl From<String> for PseudoheadersOrder {
+    fn from(order: String) -> Self {
+        let parsed: Vec<String> = order.split(",").map(|s| s.to_string()).collect();
+
+        for header in parsed.iter() {
+            if !PSEUDOHEADERS.contains(&header.as_str()) {
+                panic!("[retch patch] Invalid pseudoheader: {}", header);
+            }
+        }
+
+        for header in PSEUDOHEADERS.iter() {
+            if !parsed.contains(&header.to_string()) {
+                panic!("[retch patch] Missing pseudoheader: {}", header);
+            }
+        }
+
+        PseudoheadersOrder { inner: parsed }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -702,28 +748,42 @@ impl Iterator for Iter {
         use crate::hpack::Header::*;
 
         if let Some(ref mut pseudo) = self.pseudo {
-            if let Some(method) = pseudo.method.take() {
-                return Some(Method(method));
-            }
+            for header in self.pseudo_order.inner.iter() {
+                if header == ":method" {
+                    if let Some(method) = pseudo.method.take() {
+                        return Some(Method(method));
+                    }
+                }
 
-            if let Some(scheme) = pseudo.scheme.take() {
-                return Some(Scheme(scheme));
-            }
+                if header == ":scheme" {
+                    if let Some(scheme) = pseudo.scheme.take() {
+                        return Some(Scheme(scheme));
+                    }
+                }
 
-            if let Some(authority) = pseudo.authority.take() {
-                return Some(Authority(authority));
-            }
+                if header == ":authority" {
+                    if let Some(authority) = pseudo.authority.take() {
+                        return Some(Authority(authority));
+                    }
+                }
 
-            if let Some(path) = pseudo.path.take() {
-                return Some(Path(path));
-            }
+                if header == ":path" {
+                    if let Some(path) = pseudo.path.take() {
+                        return Some(Path(path));
+                    }
+                }
 
-            if let Some(protocol) = pseudo.protocol.take() {
-                return Some(Protocol(protocol));
-            }
+                if header == ":protocol" {
+                    if let Some(protocol) = pseudo.protocol.take() {
+                        return Some(Protocol(protocol));
+                    }
+                }
 
-            if let Some(status) = pseudo.status.take() {
-                return Some(Status(status));
+                if header == ":status" {
+                    if let Some(status) = pseudo.status.take() {
+                        return Some(Status(status));
+                    }
+                }
             }
         }
 
@@ -942,9 +1002,11 @@ impl HeaderBlock {
 
     fn into_encoding(self, encoder: &mut hpack::Encoder) -> EncodingHeaderBlock {
         let mut hpack = BytesMut::new();
+
         let headers = Iter {
             pseudo: Some(self.pseudo),
             fields: self.fields.into_iter(),
+            pseudo_order: PseudoheadersOrder::load(),
         };
 
         encoder.encode(headers, &mut hpack);
